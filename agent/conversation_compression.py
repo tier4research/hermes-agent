@@ -3402,11 +3402,14 @@ def _warn_summary_or_aux_fallback(agent: Any) -> None:
             )
 
 
-def _reset_read_dedup_caches(task_id: str, *, session_id: str = "") -> None:
+def _reset_read_dedup_caches(task_id: str, *, session_id: str = "",
+                             guardrails: Any = None) -> None:
     """Advance the file-read and skill_view repeat-read dedup to a fresh generation after a boundary.
     The mtime map is kept: the first read of each unchanged key returns full content compaction may have
     omitted; later reads return stubs, and stub-hit counters restart at the same boundary (#84857).
     The computer_use screenshot dedup is session-keyed and forgets its last frame for the same reason.
+    ``guardrails`` (the agent's ToolCallGuardrailController, when the caller has one) is re-armed too:
+    its identical-call/no-progress state can refuse the very re-read this boundary exists to allow.
     """
     with contextlib.suppress(Exception):
         from tools.file_tools_read_tracking import reset_file_dedup
@@ -3418,6 +3421,8 @@ def _reset_read_dedup_caches(task_id: str, *, session_id: str = "") -> None:
     with contextlib.suppress(Exception):
         from tools.skills_tool import reset_skill_view_dedup
         reset_skill_view_dedup(task_id)
+    if guardrails is not None:
+        guardrails.reset_for_compaction()
 
 
 def _finish_compaction_boundary(
@@ -3510,7 +3515,8 @@ def _finish_compaction_boundary(
             )
         else:
             compressor._verify_compaction_cleared_threshold = True
-    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
+    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "",
+                             guardrails=getattr(agent, "_tool_guardrails", None))
     return _compressed_est
 
 

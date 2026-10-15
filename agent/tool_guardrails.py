@@ -338,6 +338,27 @@ class ToolCallGuardrailController:
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
 
+    def reset_for_compaction(self) -> None:
+        """Forget success repeats whose result may no longer be in the model context.
+
+        A content-loss boundary (compaction, a committed tool-result prune) re-arms
+        the read dedup caches precisely so the model can fetch content the boundary
+        replaced with a summary or marker. The identical-call/no-progress state below
+        can refuse that very re-read, so it is re-armed with them. Failure counts and
+        per-turn caps are kept: compaction does not make a failed call safe to retry
+        or start a new turn.
+        """
+        self._no_progress.clear()
+        self._identical_streak_sig = None
+        self._identical_streak_result_hash = ""
+        self._identical_streak_count = 0
+        self._identical_streak_first_call_id = ""
+        self._call_history.clear()
+        if self._halt_decision and self._halt_decision.code in {
+            "idempotent_no_progress_block", "identical_call_streak_halt", "identical_cycle_halt"
+        }:
+            self._halt_decision = None
+
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision

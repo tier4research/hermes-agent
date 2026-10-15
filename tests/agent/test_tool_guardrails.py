@@ -478,3 +478,56 @@ def test_execute_code_replay_streak_notice_fires_on_warn_only_desktop_config():
     assert notices[:2] == [None, None]
     assert all(n is not None and "consecutive identical call to execute_code" in n for n in notices[2:]), notices
     assert controller.halt_decision is None, "warn-only surfaces must not halt"
+
+
+def test_compaction_boundary_rearms_reads_but_not_failures():
+    """A boundary re-arms reads whose contents the model can no longer see.
+
+    Compaction/prune keep only a summary or a one-line marker, so the same read must
+    be obtainable again within the turn. Failures are not re-armed: a boundary does
+    not make a failed call safe to retry.
+    """
+    config = ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=2,
+                                     exact_failure_block_after=2)
+    read = ("read_file", {"path": "C:/example/launcher.vbs"})
+    controller = ToolCallGuardrailController(config)
+    for _ in range(2):
+        assert controller.before_call(*read).action == "allow"
+        controller.after_call(*read, '{"content":"1|launcher contents","total_lines":1}', failed=False)
+    assert controller.before_call(*read).code == "idempotent_no_progress_block"
+
+    controller.reset_for_compaction()
+    assert controller.before_call(*read).action == "allow"
+
+    missing = ("read_file", {"path": "C:/example/missing.py"})
+    controller = ToolCallGuardrailController(config)
+    for _ in range(2):
+        assert controller.before_call(*missing).action == "allow"
+        controller.after_call(*missing, '{"error":"File not found"}', failed=True)
+    controller.reset_for_compaction()
+    assert controller.before_call(*missing).code == "repeated_exact_failure_block"
+
+
+def test_reset_read_dedup_caches_also_clears_guardrail_state():
+    """The boundary helper is the single path every content-loss boundary shares.
+
+    read_file, skill_view and the computer-use frame cache are re-armed here, so the
+    guardrail that can refuse the very re-read has to be re-armed with them — one
+    seam instead of patching each caller.
+    """
+    from agent.conversation_compression import _reset_read_dedup_caches
+
+    config = ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=2)
+    controller = ToolCallGuardrailController(config)
+    for tool_name, args, result in (
+        ("read_file", {"path": "C:/example/launcher.vbs"},
+         '{"content":"1|launcher contents","total_lines":1}'),
+        ("skill_view", {"name": "hermes-agent"}, '{"success":true,"content":"skill body"}'),
+    ):
+        for _ in range(2):
+            assert controller.before_call(tool_name, args).action == "allow"
+            controller.after_call(tool_name, args, result, failed=False)
+        assert controller.before_call(tool_name, args).code == "idempotent_no_progress_block"
+
+        _reset_read_dedup_caches("test-compaction-read", guardrails=controller)
+        assert controller.before_call(tool_name, args).action == "allow"
